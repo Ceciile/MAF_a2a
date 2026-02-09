@@ -68,9 +68,11 @@ async def streaming_example() -> None:
     query = "What's the weather like in Portland?"
     print(f"User: {query}")
     print("Agent: ", end="", flush=True)
-    async for chunk in agent.run(query, stream=True):
-        if chunk.text:
-            print(chunk.text, end="", flush=True)
+
+    async for update in agent.run_stream(query):
+        if update.text:
+            print(update.text, end="", flush=True)
+    print()  # New line after streaming is complete
     print("\n")
 
 
