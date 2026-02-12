@@ -6,7 +6,7 @@ from datetime import datetime
 from random import randint, randrange
 from typing import TYPE_CHECKING, Annotated, Any
 
-from agent_framework import Message, tool
+from agent_framework import ChatMessage, tool
 from agent_framework.openai import OpenAIChatClient
 
 from agent_framework.ollama import OllamaChatClient
@@ -108,7 +108,7 @@ async def handle_approvals_streaming(query: str, agent: "SupportsAgentRun") -> N
         user_input_requests: list[Any] = []
 
         # Stream the response
-        async for chunk in agent.run_stream(current_input):
+        async for chunk in agent.run_stream(current_input, stream=True):
             if chunk.text:
                 print(chunk.text, end="", flush=True)
 
@@ -129,14 +129,17 @@ async def handle_approvals_streaming(query: str, agent: "SupportsAgentRun") -> N
                 )
 
                 # Add the assistant message with the approval request
-                new_inputs.append(Message("assistant", [user_input_needed]))
+                new_inputs.append(ChatMessage(role="assistant", contents=[user_input_needed]))
 
                 # Get user approval
                 user_approval = await asyncio.to_thread(input, "\nApprove function call? (y/n): ")
 
                 # Add the user's approval response
                 new_inputs.append(
-                    Message("user", [user_input_needed.to_function_approval_response(user_approval.lower() == "y")])
+                    ChatMessage(
+                        role="user",
+                        contents=[user_input_needed.to_function_approval_response(user_approval.lower() == "y")],
+                    )
                 )
 
             # Update input with all the context for next iteration
