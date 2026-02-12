@@ -1,16 +1,18 @@
 # Copyright (c) Microsoft. All rights reserved.
 
 import asyncio
-from datetime import datetime
 import os
-from random import randint
-from typing import Annotated
+from datetime import datetime
+from random import randint, randrange
+from typing import TYPE_CHECKING, Annotated, Any
 
-from agent_framework import tool
+from agent_framework import Message, tool
 from agent_framework.openai import OpenAIChatClient
 
 from agent_framework.ollama import OllamaChatClient
 
+if TYPE_CHECKING:
+    from agent_framework import SupportsAgentRun
 """
 Ollama with OpenAI Chat Client Example
 
@@ -21,8 +23,13 @@ Ollama allows you to run large language models locally on your machine.
 Environment Variables:
 - OLLAMA_ENDPOINT: The base URL for your Ollama server (e.g., "http://localhost:11434/v1/")
 - OLLAMA_MODEL: The model name to use (e.g., "mistral", "llama3.2", "phi3")
+
+Demonstration of a tool with approvals.
+This sample demonstrates using AI functions with user approval workflows.
+It shows how to handle function call approvals without using threads.
 """
 
+conditions = ["sunny", "cloudy", "raining", "snowing", "clear"]
 
 # NOTE: approval_mode="never_require" is for sample brevity. Use "always_require" in production; see samples/getting_started/tools/function_tool_with_approval.py and samples/getting_started/tools/function_tool_with_approval_and_threads.py.
 @tool(approval_mode="never_require")
@@ -30,9 +37,30 @@ def get_weather(
     location: Annotated[str, "The location to get the weather for."],
 ) -> str:
     """Get the weather for a given location."""
-    conditions = ["sunny", "cloudy", "rainy", "stormy"]
+    # conditions = ["sunny", "cloudy", "rainy", "stormy"]
     return f"The weather in {location} is {conditions[randint(0, 3)]} with a high of {randint(10, 30)}°C."
 
+
+# Define a simple weather tool that requires approval
+@tool(approval_mode="always_require")
+def get_weather_detail(
+    location: Annotated[str, "The location to get the weather for."],
+) -> str:
+    """Get the weather for a given location."""
+    return (
+        f"The weather in {location} is {conditions[randrange(0, len(conditions))]} and {randrange(-10, 30)}°C, "
+        "with a humidity of 66%. "
+        f"Tomorrow will be {conditions[randrange(0, len(conditions))]} with a high of {randrange(-10, 30)}°C."
+    )
+
+
+"""
+Ensure to install Ollama and have a model running locally before running the sample
+Not all Models support function calling, to test function calling try llama3.2 or qwen3:4b
+Set the model to use via the OLLAMA_MODEL_ID environment variable or modify the code below.
+https://ollama.com/
+
+"""
 @tool(approval_mode="never_require")
 def get_time(location: str) -> str:
     """Get the current time."""
@@ -66,27 +94,76 @@ async def non_streaming_example() -> None:
     print(f"Agent: {result}\n")
 
 
+
+async def handle_approvals_streaming(query: str, agent: "SupportsAgentRun") -> None:
+    """Handle function call approvals with streaming responses.
+
+    When we don't have a thread, we need to ensure we include the original query,
+    the approval request, and the approval response in each iteration.
+    """
+    current_input: str | list[Any] = query
+    has_user_input_requests = True
+    while has_user_input_requests:
+        has_user_input_requests = False
+        user_input_requests: list[Any] = []
+
+        # Stream the response
+        async for chunk in agent.run_stream(current_input):
+            if chunk.text:
+                print(chunk.text, end="", flush=True)
+
+            # Collect user input requests from the stream
+            if chunk.user_input_requests:
+                user_input_requests.extend(chunk.user_input_requests)
+
+        if user_input_requests:
+            has_user_input_requests = True
+            # Start with the original query
+            new_inputs: list[Any] = [query]
+
+            for user_input_needed in user_input_requests:
+                print(
+                    f"\n\nUser Input Request for function from {agent.name}:"
+                    f"\n  Function: {user_input_needed.function_call.name}"
+                    f"\n  Arguments: {user_input_needed.function_call.arguments}"
+                )
+
+                # Add the assistant message with the approval request
+                new_inputs.append(Message("assistant", [user_input_needed]))
+
+                # Get user approval
+                user_approval = await asyncio.to_thread(input, "\nApprove function call? (y/n): ")
+
+                # Add the user's approval response
+                new_inputs.append(
+                    Message("user", [user_input_needed.to_function_approval_response(user_approval.lower() == "y")])
+                )
+
+            # Update input with all the context for next iteration
+            current_input = new_inputs
+
+
+
 async def streaming_example() -> None:
-    """Example of streaming response (get results as they are generated)."""
+    """Example showing AI function with approval requirement."""
+    print(f"\n=== Weather Agent with Approval Required ===\n")
     print("=== Streaming Response Example ===")
 
-    agent = OpenAIChatClient(
+    async with OpenAIChatClient(
         api_key="ollama",  # Just a placeholder, Ollama doesn't require API key
         base_url=os.getenv("OLLAMA_ENDPOINT"),
         model_id=os.getenv("OLLAMA_MODEL"),
     ).as_agent(
         name="WeatherAgent",
         instructions="You are a helpful weather agent.",
-        tools=get_weather,
-    )
+        tools=get_weather_detail,
+    ) as agent:
+        query = "Can you give me an update of the weather in Portland and detailed weather for Seattle?"
+        print(f"User: {query}")
 
-    query = "What's the weather like in Portland?"
-    print(f"User: {query}")
-    print("Agent: ", end="", flush=True)
+    print(f"\n{agent.name}: ", end="", flush=True)
 
-    async for update in agent.run_stream(query):
-        if update.text:
-            print(update.text, end="", flush=True)
+    await handle_approvals_streaming(query, agent)
     print()  # New line after streaming is complete
     print("\n")
 
